@@ -3,6 +3,7 @@ name = "exit-future"
 version = "0.1.0"
 authors = ["Pariy Technologies <admin@parity.io>"]
 description = "Future that signals exit to many receivers"
+repository = "https://github.com/paritytech/exit-future"
 license = "MIT"
 
 [dependencies]

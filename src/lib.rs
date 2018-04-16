@@ -104,7 +104,7 @@ impl Drop for Signal {
 
 /// Create a signal and exit pair. `Exit` is a future that resolves when the
 /// `Signal` object is either dropped or has `fire` called on it.
-pub fn exit_signal() -> (Signal, Exit) {
+pub fn signal() -> (Signal, Exit) {
     let inner = Arc::new(Inner {
         count: AtomicUsize::new(0),
         waiting: Mutex::new((true, HashMap::new())),
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn it_works() {
-        let (signal, exit_a) = exit_signal();
+        let (signal, exit_a) = signal();
         let exit_b = exit_a.clone();
         let exit_c = exit_b.clone();
 
@@ -142,5 +142,13 @@ mod tests {
         let _ = handle.join();
         assert!(!exit_c.is_live());
         assert!(exit_c.wait().is_ok());
+    }
+
+    #[test]
+    fn exit_signal_are_send_and_sync() {
+        fn is_send_and_sync<T: Send + Sync>() {}
+
+        is_send_and_sync::<Exit>();
+        is_send_and_sync::<Signal>();
     }
 }

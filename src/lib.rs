@@ -9,6 +9,26 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Future that resolves when inner work finishes or on exit signal firing.
+#[derive(Clone)]
+pub struct UntilExit<F> {
+    inner: F,
+    exit: Exit,
+}
+
+impl<F: Future> Future for UntilExit<F> {
+    type Item = Option<F::Item>;
+    type Error = F::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        match self.inner.poll() {
+            Ok(Async::Ready(x)) => Ok(Async::Ready(Some(x))),
+            Ok(Async::NotReady) => Ok(self.exit.check().map(|()| None)),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 /// Future that resolves when the exit signal has fired.
 pub struct Exit {
     id: usize,
@@ -21,6 +41,22 @@ impl Exit {
     pub fn is_live(&self) -> bool {
         self.inner.waiting.lock().0
     }
+
+    /// Perform given work until complete.
+    pub fn until<F: IntoFuture>(self, f: F) -> UntilExit<F::Future> {
+        UntilExit {
+            inner: f.into_future(),
+            exit: self,
+        }
+    } 
+
+    fn check(&self) -> Async<()> {
+        if self.inner.check(self.id) {
+            Async::NotReady
+        } else {
+            Async::Ready(())
+        }
+    }
 }
 
 impl Future for Exit {
@@ -28,11 +64,7 @@ impl Future for Exit {
     type Error = ();
 
     fn poll(&mut self) -> Poll<(), ()> {
-        if self.inner.check(self.id) {
-            Ok(Async::NotReady)
-        } else {
-            Ok(Async::Ready(()))
-        }
+        Ok(self.check())
     }
 }
 
@@ -150,5 +182,18 @@ mod tests {
 
         is_send_and_sync::<Exit>();
         is_send_and_sync::<Signal>();
+    }
+
+    #[test]
+    fn work_until() {
+        use futures::future;
+
+        let (signal, exit) = signal();
+        let work_a = exit.clone().until(future::ok::<_, ()>(5));
+        assert_eq!(work_a.wait().unwrap(), Some(5));
+
+        signal.fire();
+        let work_b = exit.until(::futures::future::empty::<(), ()>());
+        assert_eq!(work_b.wait().unwrap(), None);
     }
 }

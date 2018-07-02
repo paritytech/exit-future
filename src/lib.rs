@@ -103,7 +103,7 @@ impl Inner {
         let mut waiting = self.waiting.lock();
 
         if waiting.0 {
-            waiting.1.entry(id).or_insert_with(task::current);
+            let _ = waiting.1.insert(id, task::current());
         }
 
         waiting.0
@@ -138,7 +138,7 @@ impl Drop for Signal {
 /// `Signal` object is either dropped or has `fire` called on it.
 pub fn signal() -> (Signal, Exit) {
     let inner = Arc::new(Inner {
-        count: AtomicUsize::new(0),
+        count: AtomicUsize::new(1),
         waiting: Mutex::new((true, HashMap::new())),
     });
 
@@ -195,5 +195,26 @@ mod tests {
         signal.fire();
         let work_b = exit.until(::futures::future::empty::<(), ()>());
         assert_eq!(work_b.wait().unwrap(), None);
+    }
+
+    #[test]
+    fn works_from_other_thread() {
+        let (signal, exit) = signal();
+
+        ::std::thread::spawn(move || {
+            ::std::thread::sleep(::std::time::Duration::from_millis(2500));
+            signal.fire();
+        });
+
+        exit.wait().unwrap();
+    }
+
+    #[test]
+    fn clones_have_different_ids() {
+        let (signal, exit) = signal();
+
+        for i in 1..11 {
+            assert_eq!(exit.clone().id, i);
+        }
     }
 }

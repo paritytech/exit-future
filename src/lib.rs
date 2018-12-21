@@ -3,11 +3,12 @@ extern crate parking_lot;
 
 use parking_lot::Mutex;
 use futures::prelude::*;
-use futures::task::{self, Task};
+use futures::task::{self, Task, AtomicTask};
+use futures::executor::{self, Notify};
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Future that resolves when inner work finishes or on exit signal firing.
 #[derive(Clone)]
@@ -29,17 +30,58 @@ impl<F: Future> Future for UntilExit<F> {
     }
 }
 
+struct Notifier {
+    signalled: AtomicBool,
+    outer_task: AtomicTask,
+}
+
+impl Notify for Notifier {
+    // id isn't necessary because this is a notifier for a single
+    // exit future.
+    fn notify(&self, _: usize) {
+        self.signalled.store(true, Ordering::Release);
+        self.outer_task.notify()
+    }
+}
+
+struct ExitInner {
+    shared_id: usize,
+    notifier: Arc<Notifier>,
+}
+
+impl ExitInner {
+    fn check(&self, shared: &Shared) -> Async<()> {
+        // set up the outer task correctly so when the inner
+        // task is notified, we get woken up.
+        self.notifier.outer_task.register();
+
+        // if any poll was signalled by the inner task, use it.
+        if !self.notifier.signalled.fetch_and(false, Ordering::SeqCst) {
+            return Async::NotReady
+        }
+
+        // do heavy check with inner task. ID doesn't matter.
+        executor::with_notify(&self.notifier, 0, || {
+            if shared.is_live_and_notify(self.shared_id) {
+                Async::NotReady
+            } else {
+                Async::Ready(())
+            }
+        })
+    }
+}
+
 /// Future that resolves when the exit signal has fired.
 pub struct Exit {
-    id: usize,
-    inner: Arc<Inner>,
+    inner: Option<ExitInner>,
+    shared: Arc<Shared>,
 }
 
 impl Exit {
     /// Check if the signal is live outside of the context of a task and 
     /// without scheduling a wakeup.
     pub fn is_live(&self) -> bool {
-        self.inner.waiting.lock().0
+        self.shared.waiting.lock().0
     }
 
     /// Perform given work until complete.
@@ -50,12 +92,22 @@ impl Exit {
         }
     } 
 
-    fn check(&self) -> Async<()> {
-        if self.inner.check(self.id) {
-            Async::NotReady
-        } else {
-            Async::Ready(())
-        }
+    fn check(&mut self) -> Async<()> {
+        let shared = &self.shared;
+
+        // lazily register and initialize.
+        let inner = self.inner.get_or_insert_with(|| {
+            let shared_id = shared.register();
+            let notifier = Arc::new(Notifier {
+                // ensure an initial poll happens.
+                signalled: AtomicBool::new(true),
+                outer_task: AtomicTask::new(),
+            });
+
+            ExitInner { shared_id, notifier }
+        });
+
+        inner.check(shared)
     }
 }
 
@@ -70,17 +122,16 @@ impl Future for Exit {
 
 impl Clone for Exit {
     fn clone(&self) -> Exit {
-        let new_id = self.inner.register();
-        Exit { id: new_id, inner: self.inner.clone() }
+        Exit { inner: None, shared: self.shared.clone() }
     }
 }
 
-struct Inner {
+struct Shared {
     count: AtomicUsize,
     waiting: Mutex<(bool, HashMap<usize, Task>)>,
 }
 
-impl Inner {
+impl Shared {
     fn set(&self) {
         let wake_up = {
             let mut waiting = self.waiting.lock();
@@ -99,7 +150,7 @@ impl Inner {
 
     // should be called only in the context of a task.
     // returns whether the exit counter is live.
-    fn check(&self, id: usize) -> bool {
+    fn is_live_and_notify(&self, id: usize) -> bool {
         let mut waiting = self.waiting.lock();
 
         if waiting.0 {
@@ -112,12 +163,12 @@ impl Inner {
 
 /// Exit signal that fires either manually or on drop.
 pub struct Signal {
-    inner: Option<Arc<Inner>>,
+    shared: Option<Arc<Shared>>,
 }
 
 impl Signal {
     fn fire_inner(&mut self) {
-        if let Some(signal) = self.inner.take() {
+        if let Some(signal) = self.shared.take() {
             signal.set()
         }
     }
@@ -137,19 +188,20 @@ impl Drop for Signal {
 /// Create a signal and exit pair. `Exit` is a future that resolves when the
 /// `Signal` object is either dropped or has `fire` called on it.
 pub fn signal() -> (Signal, Exit) {
-    let inner = Arc::new(Inner {
+    let shared = Arc::new(Shared {
         count: AtomicUsize::new(1),
         waiting: Mutex::new((true, HashMap::new())),
     });
 
     (
-        Signal { inner: Some(inner.clone()) },
-        Exit { id: 0, inner },
+        Signal { shared: Some(shared.clone()) },
+        Exit { inner: None, shared },
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use futures::future;
     use super::*;
 
     #[test]
@@ -186,8 +238,6 @@ mod tests {
 
     #[test]
     fn work_until() {
-        use futures::future;
-
         let (signal, exit) = signal();
         let work_a = exit.clone().until(future::ok::<_, ()>(5));
         assert_eq!(work_a.wait().unwrap(), Some(5));
@@ -210,11 +260,19 @@ mod tests {
     }
 
     #[test]
-    fn clones_have_different_ids() {
-        let (signal, exit) = signal();
+    fn clone_works() {
+        let (signal, mut exit) = signal();
 
-        for i in 1..11 {
-            assert_eq!(exit.clone().id, i);
-        }
+        future::lazy(move || {
+            exit.poll().unwrap();
+            assert!(exit.inner.is_some());
+            
+            let mut exit2 = exit.clone();
+            assert!(exit2.inner.is_none());
+            exit2.poll();
+
+            assert!(exit.inner.unwrap().shared_id != exit2.inner.unwrap().shared_id);
+            future::ok::<(), ()>(())
+        }).wait().unwrap();
     }
 }

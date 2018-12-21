@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn clone_works() {
-        let (signal, mut exit) = signal();
+        let (_signal, mut exit) = signal();
 
         future::lazy(move || {
             exit.poll().unwrap();
@@ -269,7 +269,7 @@ mod tests {
             
             let mut exit2 = exit.clone();
             assert!(exit2.inner.is_none());
-            exit2.poll();
+            exit2.poll().unwrap();
 
             assert!(exit.inner.unwrap().shared_id != exit2.inner.unwrap().shared_id);
             future::ok::<(), ()>(())

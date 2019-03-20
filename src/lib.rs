@@ -145,7 +145,7 @@ impl Shared {
     }
 
     fn register(&self) -> usize {
-        self.count.fetch_add(1, Ordering::SeqCst)
+        self.count.fetch_add(1, Ordering::Relaxed)
     }
 
     // should be called only in the context of a task.
@@ -163,19 +163,22 @@ impl Shared {
 
 /// Exit signal that fires either manually or on drop.
 pub struct Signal {
-    shared: Option<Arc<Shared>>,
+    shared: Arc<Shared>,
 }
 
 impl Signal {
     fn fire_inner(&mut self) {
-        if let Some(signal) = self.shared.take() {
-            signal.set()
-        }
+        self.shared.set();
     }
 
     /// Fire the signal manually.
     pub fn fire(mut self) {
         self.fire_inner()
+    }
+
+    /// Get an exit future.
+    pub fn make_exit(&self) -> Exit {
+        Exit { inner: None, shared: self.shared.clone() }
     }
 }
 
@@ -188,15 +191,20 @@ impl Drop for Signal {
 /// Create a signal and exit pair. `Exit` is a future that resolves when the
 /// `Signal` object is either dropped or has `fire` called on it.
 pub fn signal() -> (Signal, Exit) {
+    let signal = signal_only();
+    let exit = signal.make_exit();
+
+    (signal, exit)
+}
+
+/// Create only a signal.
+pub fn signal_only() -> Signal {
     let shared = Arc::new(Shared {
         count: AtomicUsize::new(1),
         waiting: Mutex::new((true, HashMap::new())),
     });
 
-    (
-        Signal { shared: Some(shared.clone()) },
-        Exit { inner: None, shared },
-    )
+    Signal { shared }
 }
 
 #[cfg(test)]

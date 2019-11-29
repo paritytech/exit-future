@@ -1,6 +1,3 @@
-extern crate futures;
-extern crate parking_lot;
-
 use std::sync::Arc;
 use std::pin::Pin;
 use std::task::{Poll, Context};
@@ -8,6 +5,7 @@ use std::ops::DerefMut;
 use futures::{Future, FutureExt, channel::oneshot, future::{select, Either}, executor::block_on};
 use parking_lot::Mutex;
 
+/// Future that resolves when the exit signal has fired.
 #[derive(Clone)]
 pub struct Exit(Arc<Mutex<oneshot::Receiver<()>>>);
 
@@ -21,10 +19,12 @@ impl Future for Exit {
 }
 
 impl Exit {
+    /// Check if the signal is live (hasn't been cancelled).
     pub fn is_live(&self) -> bool {
         self.0.lock().try_recv().is_ok()
     }
 
+    /// Perform given work until complete.
     pub fn until<F: Future + Unpin>(self, future: F) -> impl Future<Output = Option<F::Output>> {
         select(self, future)
             .map(|either| match either {
@@ -33,19 +33,24 @@ impl Exit {
             })
     }
 
+    /// Block the current thread until complete.
     pub fn wait(self) {
         block_on(self)
     }
 }
 
+/// Exit signal.
 pub struct Signal(oneshot::Sender<()>);
 
 impl Signal {
+    /// Fire the signal.
     pub fn fire(self) -> Result<(), ()> {
         self.0.send(())
     }
 }
 
+/// Create a signal and exit pair. `Exit` is a future that resolves when the `Signal` object has
+/// `fire` called on it.
 pub fn signal() -> (Signal, Exit) {
     let (sender, receiver) = oneshot::channel();
     (Signal(sender), Exit(Arc::new(Mutex::new(receiver))))

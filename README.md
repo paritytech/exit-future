@@ -12,5 +12,5 @@ let (signal, exit) = exit_future::signal();
     exit.wait();
 });
 
-let _ = signal.fire();
+let _ = signal.fire(); // also would fire on drop.
 ```

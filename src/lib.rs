@@ -167,27 +167,4 @@ mod tests {
 
         block_on(future)
     }
-
-    #[test]
-    fn compat_works() {
-        use futures01::Future;
-        use futures::TryFutureExt;
-
-        let (_sender, recv) = futures01::sync::oneshot::channel();
-        let (signal, exit) = signal();
-
-        let handle = spawn(move || {
-            sleep(Duration::from_secs(1));
-            signal.fire().unwrap();
-        });
-
-        let _ = recv
-            .select(exit.clone().map(Ok).compat())
-            .wait()
-            .unwrap_or_else(|_| panic!());
-
-        exit.wait();
-
-        handle.join().unwrap();
-    }
 }

@@ -1,11 +1,11 @@
 [package]
 name = "exit-future"
-version = "0.1.4"
+version = "0.2.0"
 authors = ["Parity Technologies <admin@parity.io>"]
 description = "Future that signals exit to many receivers"
 repository = "https://github.com/paritytech/exit-future"
 license = "MIT"
+edition = "2018"
 
 [dependencies]
-futures = "0.1.25"
-parking_lot = "0.7.1"
+futures = "0.3.1"

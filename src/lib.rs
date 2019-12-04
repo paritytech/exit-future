@@ -1,24 +1,21 @@
-use std::sync::Arc;
 use std::pin::Pin;
 use std::task::{Poll, Context};
-use std::ops::DerefMut;
 use futures::{Future, FutureExt, channel::oneshot, future::{select, Either, Shared, FusedFuture}, executor::block_on};
-use parking_lot::Mutex;
 
 /// Future that resolves when the exit signal has fired.
 #[derive(Clone)]
-pub struct Exit(Arc<Mutex<Shared<oneshot::Receiver<()>>>>);
+pub struct Exit(Shared<oneshot::Receiver<()>>);
 
 impl Future for Exit {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-        let mut receiver = Pin::into_inner(self).0.lock();
+        let receiver = &mut Pin::into_inner(self).0;
 
         if receiver.is_terminated() {
             Poll::Ready(())
         } else {
-            Pin::new(receiver.deref_mut()).poll(cx).map(drop)
+            Pin::new(receiver).poll(cx).map(drop)
         }
     }
 }
@@ -53,7 +50,7 @@ impl Signal {
 /// either dropped or has `fire` called on it.
 pub fn signal() -> (Signal, Exit) {
     let (sender, receiver) = oneshot::channel();
-    (Signal(sender), Exit(Arc::new(Mutex::new(receiver.shared()))))
+    (Signal(sender), Exit(receiver.shared()))
 }
 
 #[cfg(test)]
@@ -61,6 +58,7 @@ mod tests {
     use futures::future::{join3, ready, pending, lazy};
     use std::thread::{spawn, sleep};
     use std::time::Duration;
+    use std::sync::Arc;
     use super::*;
 
     #[test]
